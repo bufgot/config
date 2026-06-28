@@ -88,12 +88,75 @@ etcd:
     - http://etcd-1:2379
     - http://etcd-2:2379
   namespace: my-app
+
+nacos:
+  type: nacos
+  endpoints:
+    - http://127.0.0.1:8848
+  namespace: my-namespace
+  app_id: my-config
+  extra:
+    dataId: my-config-data-id
+    group: DEFAULT_GROUP
+  sync_interval: 30
 ```
 
 ## 可用的 Provider
 
-- `providers/apollo`：Apollo 配置中心（HTTP 拉取 + 定时轮询）
-- `providers/etcd`：Etcd 配置中心（前缀扫描 + Watch）
+### Apollo
 
-如需接入其他配置中心（Consul、Nacos 等），实现 `config.RemoteProvider` 接口即可。
+`providers/apollo` — Apollo 配置中心，通过 HTTP REST API 拉取配置，定时轮询 detectionId 检测变更。
+
+配置字段：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `endpoints` | 是 | Apollo Config Service 地址列表 |
+| `app_id` | 是 | 应用 ID |
+| `cluster` | 否 | 集群名（默认 default） |
+| `namespace` | 否 | 命名空间（默认 application） |
+| `sync_interval` | 否 | 同步间隔秒数（默认 60） |
+
+### Etcd
+
+`providers/etcd` — Etcd 配置中心，通过前缀扫描 + 原生 Watch 机制实时推送变更。
+
+配置字段：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `endpoints` | 是 | Etcd 节点地址列表 |
+| `namespace` | 否 | 配置 key 前缀（默认 /config/） |
+| `app_id` | 否 | 配置 key 前缀备选（当 namespace 为空时使用） |
+
+### Nacos
+
+`providers/nacos` — Nacos 配置中心，通过 HTTP Open API (`/v1/cs/configs`) 拉取配置，定时轮询 + MD5 哈希检测配置变更。
+
+配置字段：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `endpoints` | 是 | Nacos 服务地址，如 `http://127.0.0.1:8848` |
+| `app_id` 或 `extra.dataId` | 是 | 配置 Data ID，`extra.dataId` 优先级高于 `app_id` |
+| `namespace` | 否 | Nacos 命名空间（租户 ID），空表示 public |
+| `extra.group` | 否 | 配置分组（默认 `DEFAULT_GROUP`） |
+| `sync_interval` | 否 | 轮询间隔秒数（默认 30） |
+
+代码示例：
+
+```go
+import "github.com/bufgot/config/providers/nacos"
+
+rc := config.ParseRemoteConfig(app.Viper(), "nacos")
+if rc != nil {
+    provider, err := nacos.New(rc)
+    if err != nil {
+        log.Fatal(err)
+    }
+    app.UseRemote(provider)
+}
+```
+
+如需接入其他配置中心（Consul 等），实现 `config.RemoteProvider` 接口即可。
 *（内容由AI生成，仅供参考）*
