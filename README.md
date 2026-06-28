@@ -1,14 +1,3 @@
----
-AIGC:
-    Label: "1"
-    ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: da6502ccb5c2f99d7dcc9554f9e79abc_ff657888730a11f1986d525400d9a7a1
-    ReservedCode1: gsdCiUF+fn6SsHFsUDKz63WkboBmYm9boZCe8wcodXMDpQQqVeGowH5Ya0bLNoOrBWzBXSM0ayEsZ6U4k12YHUsk9Us9clAnpRRKJgXcpD2K8snmdicguc3fl2C4YxOkRhaX8GbPnK5lAj5xDIkARljetkpCPX1UuI59cYf+2jJoki1/vZYnCOWqKgg=
-    ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: da6502ccb5c2f99d7dcc9554f9e79abc_ff657888730a11f1986d525400d9a7a1
-    ReservedCode2: gsdCiUF+fn6SsHFsUDKz63WkboBmYm9boZCe8wcodXMDpQQqVeGowH5Ya0bLNoOrBWzBXSM0ayEsZ6U4k12YHUsk9Us9clAnpRRKJgXcpD2K8snmdicguc3fl2C4YxOkRhaX8GbPnK5lAj5xDIkARljetkpCPX1UuI59cYf+2jJoki1/vZYnCOWqKgg=
----
-
 # config
 
 一个通用的 Go 应用配置管理库。
