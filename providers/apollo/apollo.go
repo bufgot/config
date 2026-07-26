@@ -124,7 +124,6 @@ func (p *Provider) Watch() (<-chan map[string]any, error) {
 
 			// Check if actually changed
 			p.mu.Lock()
-			cached := p.cache
 			p.cache = data
 			nid := p.notificationID
 			if nid2, ok := getIntFromMap(data, "notificationId"); ok {
