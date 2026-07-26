@@ -11,6 +11,7 @@
 package nacos
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
@@ -114,7 +115,7 @@ func (p *Provider) Fetch() (map[string]any, error) {
 
 // Watch starts periodic polling and returns a config change channel.
 // Uses MD5 hash comparison to detect content changes.
-func (p *Provider) Watch() (<-chan map[string]any, error) {
+func (p *Provider) Watch(ctx context.Context) (<-chan map[string]any, error) {
 	ch := make(chan map[string]any, 1)
 
 	go func() {
@@ -127,7 +128,12 @@ func (p *Provider) Watch() (<-chan map[string]any, error) {
 		ticker := time.NewTicker(time.Duration(interval) * time.Second)
 		defer ticker.Stop()
 
-		for range ticker.C {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
 			data, hash, err := p.fetchAndHash()
 			if err != nil {
 				log.Printf("[nacos] watch fetch error: %v", err)

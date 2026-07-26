@@ -84,7 +84,7 @@ func (p *Provider) Fetch() (map[string]any, error) {
 }
 
 // Watch monitors changes under the Etcd prefix.
-func (p *Provider) Watch() (<-chan map[string]any, error) {
+func (p *Provider) Watch(ctx context.Context) (<-chan map[string]any, error) {
 	ch := make(chan map[string]any, 1)
 	prefix := p.keyPrefix()
 
@@ -92,7 +92,7 @@ func (p *Provider) Watch() (<-chan map[string]any, error) {
 		defer close(ch)
 		defer p.client.Close()
 
-		watchChan := p.client.Watch(context.Background(), prefix, clientv3.WithPrefix())
+		watchChan := p.client.Watch(ctx, prefix, clientv3.WithPrefix())
 
 		for wr := range watchChan {
 			if wr.Err() != nil {

@@ -11,6 +11,7 @@
 package apollo
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -104,45 +105,48 @@ func (p *Provider) Fetch() (map[string]any, error) {
 }
 
 // Watch starts Apollo polling and returns a config change channel.
-func (p *Provider) Watch() (<-chan map[string]any, error) {
+func (p *Provider) Watch(ctx context.Context) (<-chan map[string]any, error) {
 	ch := make(chan map[string]any, 1)
 
 	go func() {
 		defer close(ch)
-		ticker := time.NewTicker(time.Duration(p.cfg.SyncInterval) * time.Second)
-		if p.cfg.SyncInterval <= 0 {
-			ticker = time.NewTicker(60 * time.Second)
+
+		interval := p.cfg.SyncInterval
+		if interval <= 0 {
+			interval = 60
 		}
+		ticker := time.NewTicker(time.Duration(interval) * time.Second)
 		defer ticker.Stop()
 
-		for range ticker.C {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+
+			// Save old notificationID before Fetch (Fetch() updates it internally from raw API response).
+			p.mu.Lock()
+			oldNID := p.notificationID
+			p.mu.Unlock()
+
 			data, err := p.Fetch()
 			if err != nil {
 				log.Printf("[apollo] watch fetch error: %v", err)
 				continue
 			}
 
-			// Check if actually changed
+			// Compare updated notificationID.
 			p.mu.Lock()
-			p.cache = data
-			nid := p.notificationID
-			if nid2, ok := getIntFromMap(data, "notificationId"); ok {
-				p.notificationID = nid2
-			}
+			changed := p.notificationID != oldNID
 			p.mu.Unlock()
 
-			if nid == p.notificationID {
-				continue // No change
-			}
-
-			// Extract configurations
-			cfgs, ok := data["configurations"].(map[string]any)
-			if !ok {
+			if !changed {
 				continue
 			}
 
 			select {
-			case ch <- cfgs:
+			case ch <- data:
 				log.Println("[apollo] config change pushed to channel")
 			default:
 				log.Println("[apollo] channel full, dropping change")

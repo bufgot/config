@@ -26,6 +26,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"sync"
@@ -36,15 +37,16 @@ import (
 // App is the top-level configuration management instance, encapsulating viper, remote provider, and change listener mechanism.
 // Typically, only one App instance is created per application.
 type App struct {
-	mu       sync.RWMutex
-	viper    *viper.Viper
-	raw      any // User-provided struct pointer, target for viper.Unmarshal
+	mu    sync.RWMutex
+	viper *viper.Viper
+	raw   any // User-provided struct pointer, target for viper.Unmarshal
 
-	remoteProvider RemoteProvider
-	watcherCancel  func() // context cancel function to stop the watcher
+	remoteProviders map[string]RemoteProvider     // key = provider name
+	watcherCancels  map[string]context.CancelFunc // key = provider name
+	watcherMu       sync.Mutex
 
-	listeners   []ChangeListener
-	listenerMu  sync.RWMutex
+	listeners  []ChangeListener
+	listenerMu sync.RWMutex
 
 	initialized bool
 }
@@ -114,15 +116,27 @@ func (a *App) notifyChange() {
 	}
 }
 
-// Close shuts down config management, stops the remote watcher, and clears listeners.
+// HasProvider reports whether a remote provider with the given name is currently attached.
+func (a *App) HasProvider(name string) bool {
+	a.watcherMu.Lock()
+	defer a.watcherMu.Unlock()
+	_, ok := a.remoteProviders[name]
+	return ok
+}
+
+// Close shuts down config management, stops all remote watchers, and clears listeners.
 func (a *App) Close() {
+	a.watcherMu.Lock()
+	for name, cancel := range a.watcherCancels {
+		cancel()
+		log.Printf("[config] watcher [%s] cancelled", name)
+	}
+	a.watcherCancels = nil
+	a.remoteProviders = nil
+	a.watcherMu.Unlock()
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
-
-	if a.watcherCancel != nil {
-		a.watcherCancel()
-		a.watcherCancel = nil
-	}
 
 	a.listenerMu.Lock()
 	a.listeners = nil

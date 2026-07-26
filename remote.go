@@ -10,38 +10,55 @@ import (
 
 // UseRemote connects to a remote config center.
 //
-// provider is a RemoteProvider constructed from remote config connection info parsed from local config.
+// Multiple providers may be attached (e.g. etcd + nacos + apollo).
 // After calling this method, App will:
 //  1. Asynchronously fetch remote config once and merge into existing config
 //  2. Start a watcher goroutine to continuously monitor remote changes
 //
 // Requires LoadLocal to have been called first.
+// Returns error if a provider with the same name is already attached.
 func (a *App) UseRemote(provider RemoteProvider) error {
-	a.mu.Lock()
-	if !a.initialized {
-		a.mu.Unlock()
+	name := provider.Name()
+
+	a.watcherMu.Lock()
+	if a.remoteProviders == nil {
+		a.remoteProviders = make(map[string]RemoteProvider)
+		a.watcherCancels = make(map[string]context.CancelFunc)
+	}
+	if _, exists := a.remoteProviders[name]; exists {
+		a.watcherMu.Unlock()
+		return fmt.Errorf("config: remote provider [%s] already attached", name)
+	}
+
+	a.mu.RLock()
+	initialized := a.initialized
+	a.mu.RUnlock()
+	if !initialized {
+		a.watcherMu.Unlock()
 		return fmt.Errorf("config: LoadLocal must be called before UseRemote")
 	}
-	a.remoteProvider = provider
-	a.mu.Unlock()
 
-	log.Printf("[config] remote provider [%s] attached", provider.Name())
+	a.remoteProviders[name] = provider
+	a.watcherMu.Unlock()
+
+	log.Printf("[config] remote provider [%s] attached", name)
 
 	// Async fetch remote config
 	go a.fetchRemoteConfig(provider)
 
 	// Start watcher
-	ch, err := provider.Watch()
+	ctx, cancel := context.WithCancel(context.Background())
+	ch, err := provider.Watch(ctx)
 	if err != nil {
-		return fmt.Errorf("config: start watch on %s: %w", provider.Name(), err)
+		cancel()
+		return fmt.Errorf("config: start watch on %s: %w", name, err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	a.mu.Lock()
-	a.watcherCancel = cancel
-	a.mu.Unlock()
+	a.watcherMu.Lock()
+	a.watcherCancels[name] = cancel
+	a.watcherMu.Unlock()
 
-	go a.watchRemoteLoop(ctx, ch, provider.Name())
+	go a.watchRemoteLoop(ctx, ch, name)
 
 	return nil
 }

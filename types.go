@@ -1,5 +1,7 @@
 package config
 
+import "context"
+
 // ChangeListener is the type for config change callback functions.
 // The cfg parameter is the updated config (same instance as returned by App.Get()).
 type ChangeListener func(cfg any)
@@ -17,7 +19,7 @@ type RemoteProvider interface {
 	// Watch starts config change monitoring, sending the latest config to the channel on remote change.
 	// The returned channel is consumed by App; stop is signaled via ctx.Done() when App.Close() is called.
 	// Implementations should close the channel and exit when ctx is cancelled.
-	Watch() (<-chan map[string]any, error)
+	Watch(ctx context.Context) (<-chan map[string]any, error)
 }
 
 // RemoteConfig holds generic remote config center connection info.
