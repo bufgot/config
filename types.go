@@ -44,5 +44,5 @@ type RemoteConfig struct {
 	SyncInterval int `mapstructure:"sync_interval" json:"sync_interval" yaml:"sync_interval"`
 
 	// Extra holds extension fields for provider-specific config
-	Extra map[string]any `mapstructure:"extra" json:"extra" yaml:"extra"`
+	Extra map[string]any `mapstructure:",remain" json:"extra" yaml:"extra"`
 }

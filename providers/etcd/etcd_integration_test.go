@@ -10,7 +10,7 @@ import (
 
 func TestEtcd_Fetch(t *testing.T) {
 	rc := &config.RemoteConfig{
-		Endpoints: []string{"127.0.0.1:2379"},
+		Endpoints: []string{"192.168.1.2:2479"},
 		Namespace: "test_app",
 	}
 
@@ -39,7 +39,7 @@ func TestEtcd_Fetch(t *testing.T) {
 
 func TestEtcd_Watch(t *testing.T) {
 	rc := &config.RemoteConfig{
-		Endpoints: []string{"127.0.0.1:2379"},
+		Endpoints: []string{"192.168.1.2:2479"},
 		Namespace: "test_app",
 	}
 
@@ -95,7 +95,7 @@ func TestEtcd_Watch(t *testing.T) {
 
 func TestEtcd_WatchCancel(t *testing.T) {
 	rc := &config.RemoteConfig{
-		Endpoints: []string{"127.0.0.1:2379"},
+		Endpoints: []string{"192.168.1.2:2479"},
 		Namespace: "test_app",
 	}
 

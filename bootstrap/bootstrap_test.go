@@ -6,20 +6,72 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/bufgot/config"
+	"github.com/nacos-group/nacos-sdk-go/v2/clients"
+	"github.com/nacos-group/nacos-sdk-go/v2/common/constant"
+	"github.com/nacos-group/nacos-sdk-go/v2/vo"
 )
+
+// Real Nacos 3.x for integration tests.
+const (
+	testNacosAddr     = "192.168.1.2:2848"
+	testNacosGrpcPort = 2849
+	testNacosUser     = "nacos"
+	testNacosPass     = "nacos"
+)
+
+// publishNacosConfig publishes a config to the real Nacos instance.
+func publishNacosConfig(t *testing.T, dataID, group, content string) {
+	t.Helper()
+
+	cc := constant.ClientConfig{
+		NamespaceId:         "",
+		TimeoutMs:           10000,
+		NotLoadCacheAtStart: true,
+		Username:            testNacosUser,
+		Password:            testNacosPass,
+		LogLevel:            "warn",
+	}
+	sc := []constant.ServerConfig{{
+		IpAddr:   "192.168.1.2",
+		Port:     2848,
+		GrpcPort: 2849,
+	}}
+
+	client, err := clients.NewConfigClient(vo.NacosClientParam{
+		ClientConfig:  &cc,
+		ServerConfigs: sc,
+	})
+	if err != nil {
+		t.Fatalf("nacos NewConfigClient: %v", err)
+	}
+
+	ok, err := client.PublishConfig(vo.ConfigParam{
+		DataId:  dataID,
+		Group:   group,
+		Content: content,
+	})
+	if err != nil {
+		t.Fatalf("PublishConfig: %v", err)
+	}
+	if !ok {
+		t.Fatal("PublishConfig returned false")
+	}
+	t.Logf("published to nacos: %s/%s = %s", dataID, group, content)
+}
 
 type TestAppConfig struct {
 	Name    string `mapstructure:"name" json:"name" yaml:"name"`
 	Version string `mapstructure:"version" json:"version" yaml:"version"`
 	Port    int    `mapstructure:"port" json:"port" yaml:"port"`
 	Etcd    struct {
-		Endpoints  []string `mapstructure:"endpoints"`
-		Namespace  string   `mapstructure:"namespace"`
-		SyncInterval int    `mapstructure:"sync_interval"`
+		Endpoints    []string `mapstructure:"endpoints"`
+		Namespace    string   `mapstructure:"namespace"`
+		SyncInterval int      `mapstructure:"sync_interval"`
 	} `mapstructure:"etcd"`
 	Nacos struct {
 		Endpoints    []string `mapstructure:"endpoints"`
@@ -34,18 +86,9 @@ type TestAppConfig struct {
 	} `mapstructure:"apollo"`
 }
 
-// setupMockServers creates mock servers for Nacos and Apollo, returns cleanup.
-func setupMockServers(t *testing.T) (nacosURL, apolloURL string, cleanup func()) {
+// setupMockApollo creates a mock HTTP server for Apollo, returns URL + cleanup.
+func setupMockApollo(t *testing.T) (apolloURL string, cleanup func()) {
 	t.Helper()
-
-	nacosTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"name":    "nacos-remote",
-			"version": "2.0",
-			"port":    8081,
-		})
-	}))
 
 	apolloTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -62,22 +105,23 @@ func setupMockServers(t *testing.T) (nacosURL, apolloURL string, cleanup func())
 		})
 	}))
 
-	cleanup = func() {
-		nacosTS.Close()
-		apolloTS.Close()
-	}
-	return nacosTS.URL, apolloTS.URL, cleanup
+	return apolloTS.URL, func() { apolloTS.Close() }
 }
 
 func TestBootstrapRemote_AllThree(t *testing.T) {
-	nacosURL, apolloURL, cleanup := setupMockServers(t)
-	defer cleanup()
+	apolloURL, apolloCleanup := setupMockApollo(t)
+	defer apolloCleanup()
+
+	// Publish test config to real Nacos
+	publishNacosConfig(t, "test-app", "DEFAULT_GROUP",
+		`{"name":"nacos-remote","version":"2.0","port":8081}`)
+	time.Sleep(500 * time.Millisecond)
 
 	dir := t.TempDir()
 	writeFile(t, dir, "app.yml",
 		"name: local-app\nversion: 1.0\nport: 3000\n"+
 			"etcd:\n  endpoints: [127.0.0.1:2379]\n  namespace: test_app\n"+
-			"nacos:\n  endpoints: ["+nacosURL+"]\n  app_id: test-app\n"+
+			"nacos:\n  endpoints: ["+testNacosAddr+"]\n  app_id: test-app\n  grpc_port: "+strconv.Itoa(testNacosGrpcPort)+"\n  username: "+testNacosUser+"\n  password: "+testNacosPass+"\n"+
 			"apollo:\n  endpoints: ["+apolloURL+"]\n  app_id: test-app\n  namespace: application\n")
 
 	app := config.New()
@@ -88,10 +132,8 @@ func TestBootstrapRemote_AllThree(t *testing.T) {
 	BootstrapRemote(app)
 	defer app.Close()
 
-	// Wait for async fetches to complete
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 
-	// Verify all three providers connected
 	if !app.HasProvider("etcd") {
 		t.Log("etcd not connected (expected if etcd server not available)")
 	}
@@ -130,8 +172,8 @@ func TestBootstrapRemote_None(t *testing.T) {
 }
 
 func TestBootstrapRemote_Partial(t *testing.T) {
-	_, apolloURL, cleanup := setupMockServers(t)
-	defer cleanup()
+	apolloURL, apolloCleanup := setupMockApollo(t)
+	defer apolloCleanup()
 
 	dir := t.TempDir()
 	writeFile(t, dir, "app.yml",
@@ -158,13 +200,14 @@ func TestBootstrapRemote_Partial(t *testing.T) {
 }
 
 func TestBootstrapRemote_ConfigChangeNotification(t *testing.T) {
-	nacosURL, _, cleanup := setupMockServers(t)
-	defer cleanup()
+	publishNacosConfig(t, "test-app", "DEFAULT_GROUP",
+		`{"name":"nacos-remote","version":"1.0","port":8081}`)
+	time.Sleep(500 * time.Millisecond)
 
 	dir := t.TempDir()
 	writeFile(t, dir, "app.yml",
 		"name: local-app\nversion: 1.0\nport: 3000\n"+
-			"nacos:\n  endpoints: ["+nacosURL+"]\n  app_id: test-app\n  sync_interval: 1\n")
+			"nacos:\n  endpoints: ["+testNacosAddr+"]\n  app_id: test-app\n  sync_interval: 1\n  grpc_port: "+strconv.Itoa(testNacosGrpcPort)+"\n  username: "+testNacosUser+"\n  password: "+testNacosPass+"\n")
 
 	app := config.New()
 	if err := app.LoadLocal(dir, &TestAppConfig{}); err != nil {
@@ -180,11 +223,15 @@ func TestBootstrapRemote_ConfigChangeNotification(t *testing.T) {
 	BootstrapRemote(app)
 	defer app.Close()
 
-	// Wait for initial fetch + first watch tick
+	// Publish updated config to trigger change notification via nacos watch
+	time.Sleep(1 * time.Second)
+	publishNacosConfig(t, "test-app", "DEFAULT_GROUP",
+		`{"name":"nacos-remote","version":"2.0","port":8081}`)
+
 	select {
 	case <-changed:
 		t.Log("config change notification received")
-	case <-time.After(5 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("timeout waiting for config change notification")
 	}
 }
