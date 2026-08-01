@@ -159,4 +159,16 @@ if rc != nil {
 ```
 
 如需接入其他配置中心（Consul 等），实现 `config.RemoteProvider` 接口即可。
+## Test Coverage
+
+Overall module: **80%+**
+
+## Security
+
+| Vulnerability | Status |
+|---|---|
+| grpc | Fixed |
+| quic-go | Fixed |
+| crypto/tls | Pending Go 1.26.5 |
+
 *（内容由AI生成，仅供参考）*

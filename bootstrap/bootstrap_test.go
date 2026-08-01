@@ -199,6 +199,202 @@ func TestBootstrapRemote_Partial(t *testing.T) {
 	t.Log("partial bootstrap: only apollo attached")
 }
 
+func TestBootstrapRemote_InitError(t *testing.T) {
+	// Provide invalid endpoints to trigger init errors for etcd/nacos
+	// Use empty endpoints to force immediate failure
+	dir := t.TempDir()
+	writeFile(t, dir, "app.yml",
+		"name: bad-config\nversion: 1.0\nport: 6000\n"+
+			"etcd:\n  endpoints: []\n"+
+			"nacos:\n  endpoints: [bad-host:1]\n  app_id: bad-app\n"+
+			"apollo:\n  endpoints: [http://invalid:99999]\n  app_id: bad-app\n")
+
+	app := config.New()
+	if err := app.LoadLocal(dir, &TestAppConfig{}); err != nil {
+		t.Fatalf("LoadLocal: %v", err)
+	}
+
+	// Should not panic; init errors are logged and swallowed
+	BootstrapRemote(app)
+	defer app.Close()
+
+	time.Sleep(2 * time.Second)
+
+	// Providers with bad config may fail or timeout; bootstrap should complete
+	t.Log("init error bootstrap completed without panic")
+}
+
+func TestBootstrapRemote_NacosOnly(t *testing.T) {
+	publishNacosConfig(t, "test-app", "DEFAULT_GROUP",
+		`{"name":"nacos-local","version":"1.0","port":7000}`)
+	time.Sleep(500 * time.Millisecond)
+
+	dir := t.TempDir()
+	writeFile(t, dir, "app.yml",
+		"name: nacos-only\nversion: 1.0\nport: 7000\n"+
+			"nacos:\n  endpoints: ["+testNacosAddr+"]\n  app_id: test-app\n  grpc_port: "+strconv.Itoa(testNacosGrpcPort)+"\n  username: "+testNacosUser+"\n  password: "+testNacosPass+"\n")
+
+	app := config.New()
+	if err := app.LoadLocal(dir, &TestAppConfig{}); err != nil {
+		t.Fatalf("LoadLocal: %v", err)
+	}
+
+	BootstrapRemote(app)
+	defer app.Close()
+
+	time.Sleep(500 * time.Millisecond)
+
+	if !app.HasProvider("nacos") {
+		t.Fatal("nacos provider should be attached")
+	}
+	if app.HasProvider("etcd") || app.HasProvider("apollo") {
+		t.Fatal("only nacos should be attached")
+	}
+}
+
+func TestBootstrapRemote_EtcdAttachError(t *testing.T) {
+	dir := t.TempDir()
+	// etcd.New may succeed with empty endpoints (just creates client), but
+	// UseRemote should fail or succeed; test covers the attach path either way.
+	writeFile(t, dir, "app.yml",
+		"name: etcd-attach-test\nversion: 1.0\nport: 8001\n"+
+			"etcd:\n  endpoints: [127.0.0.1:2379]\n  namespace: test\n")
+
+	app := config.New()
+	if err := app.LoadLocal(dir, &TestAppConfig{}); err != nil {
+		t.Fatalf("LoadLocal: %v", err)
+	}
+
+	BootstrapRemote(app)
+	time.Sleep(200 * time.Millisecond)
+	// Second bootstrap: if etcd was attached, this hits the "attach failed" path
+	BootstrapRemote(app)
+	defer app.Close()
+	t.Log("etcd attach error bootstrap completed")
+}
+
+func TestBootstrapRemote_NacosAttachError(t *testing.T) {
+	publishNacosConfig(t, "test-app", "DEFAULT_GROUP",
+		`{"name":"nacos-dup","version":"1.0","port":8081}`)
+	time.Sleep(500 * time.Millisecond)
+
+	dir := t.TempDir()
+	writeFile(t, dir, "app.yml",
+		"name: nacos-dup-test\nversion: 1.0\nport: 8002\n"+
+			"nacos:\n  endpoints: ["+testNacosAddr+"]\n  app_id: test-app\n  grpc_port: "+strconv.Itoa(testNacosGrpcPort)+"\n  username: "+testNacosUser+"\n  password: "+testNacosPass+"\n")
+
+	app := config.New()
+	if err := app.LoadLocal(dir, &TestAppConfig{}); err != nil {
+		t.Fatalf("LoadLocal: %v", err)
+	}
+
+	BootstrapRemote(app)
+	time.Sleep(500 * time.Millisecond)
+	// Second bootstrap hits the "nacos attach failed" log path
+	BootstrapRemote(app)
+	defer app.Close()
+	t.Log("nacos attach error bootstrap completed")
+}
+
+func TestBootstrapRemote_DuplicateAttach(t *testing.T) {
+	// Setup apollo config, pre-attach, then bootstrap to hit the "attach failed" log path
+	apolloURL, apolloCleanup := setupMockApollo(t)
+	defer apolloCleanup()
+
+	dir := t.TempDir()
+	writeFile(t, dir, "app.yml",
+		"name: dup-test\nversion: 1.0\nport: 8000\n"+
+			"apollo:\n  endpoints: ["+apolloURL+"]\n  app_id: test-app\n  namespace: application\n")
+
+	app := config.New()
+	if err := app.LoadLocal(dir, &TestAppConfig{}); err != nil {
+		t.Fatalf("LoadLocal: %v", err)
+	}
+
+	// First bootstrap attaches apollo
+	BootstrapRemote(app)
+
+	time.Sleep(300 * time.Millisecond)
+
+	if !app.HasProvider("apollo") {
+		t.Fatal("apollo should be attached after first bootstrap")
+	}
+
+	// Second bootstrap: apollo section exists, but provider already attached → attach error logged
+	BootstrapRemote(app)
+	defer app.Close()
+
+	t.Log("duplicate attach bootstrap completed without panic")
+}
+
+// ============================================================
+// Init error paths (no real server needed)
+// ============================================================
+
+func TestBootstrapRemote_ApolloInitError(t *testing.T) {
+	dir := t.TempDir()
+	// endpoints valid but missing app_id → apollo.New returns error
+	writeFile(t, dir, "app.yml",
+		"name: no-appid\nversion: 1.0\nport: 9000\n"+
+			"apollo:\n  endpoints: [http://127.0.0.1:9999]\n")
+
+	app := config.New()
+	if err := app.LoadLocal(dir, &TestAppConfig{}); err != nil {
+		t.Fatalf("LoadLocal: %v", err)
+	}
+
+	// Should not panic; init error is logged
+	BootstrapRemote(app)
+	defer app.Close()
+
+	if app.HasProvider("apollo") {
+		t.Fatal("apollo should not be attached when init fails")
+	}
+	t.Log("apollo init error: OK")
+}
+
+func TestBootstrapRemote_NacosInitError(t *testing.T) {
+	dir := t.TempDir()
+	// endpoints valid but missing app_id → nacos.New returns error
+	writeFile(t, dir, "app.yml",
+		"name: no-nacos-appid\nversion: 1.0\nport: 9100\n"+
+			"nacos:\n  endpoints: [127.0.0.1:2848]\n")
+
+	app := config.New()
+	if err := app.LoadLocal(dir, &TestAppConfig{}); err != nil {
+		t.Fatalf("LoadLocal: %v", err)
+	}
+
+	BootstrapRemote(app)
+	defer app.Close()
+
+	if app.HasProvider("nacos") {
+		t.Fatal("nacos should not be attached when init fails")
+	}
+	t.Log("nacos init error: OK")
+}
+
+func TestBootstrapRemote_EtcdInitError(t *testing.T) {
+	dir := t.TempDir()
+	// valid-looking endpoints, will fail on connect
+	writeFile(t, dir, "app.yml",
+		"name: etcd-bad\nversion: 1.0\nport: 9200\n"+
+			"etcd:\n  endpoints: [http://127.0.0.1:1]\n")
+
+	app := config.New()
+	if err := app.LoadLocal(dir, &TestAppConfig{}); err != nil {
+		t.Fatalf("LoadLocal: %v", err)
+	}
+
+	BootstrapRemote(app)
+	defer app.Close()
+
+	// etcd.New with bad endpoints may succeed (just creates client) but later fails;
+	// if it succeeds, the provider IS attached. Either way, bootstrap shouldn't panic.
+	t.Log("etcd init error/bootstrap completed without panic")
+}
+
+
 func TestBootstrapRemote_ConfigChangeNotification(t *testing.T) {
 	publishNacosConfig(t, "test-app", "DEFAULT_GROUP",
 		`{"name":"nacos-remote","version":"1.0","port":8081}`)

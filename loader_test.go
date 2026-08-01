@@ -215,3 +215,33 @@ func writeFile(t *testing.T, dir, name, content string) {
 		t.Fatalf("failed to write %s: %v", path, err)
 	}
 }
+
+// ============================================================
+// LoadLocal: already initialized (second call with different files preserved)
+// ============================================================
+
+func TestLoadLocal_AlreadyInitialized(t *testing.T) {
+	app := New()
+	dir := t.TempDir()
+	writeFile(t, dir, "app.yml", "name: first")
+
+	err := app.LoadLocal(dir, &TestConfig{})
+	if err != nil {
+		t.Fatalf("first LoadLocal failed: %v", err)
+	}
+
+	// Wipe dir and write a different file
+	os.RemoveAll(dir)
+	os.Mkdir(dir, 0755)
+	writeFile(t, dir, "app.yml", "name: second")
+
+	// Second call should return immediately (already initialized), not overwrite
+	err = app.LoadLocal(dir, &TestConfig{})
+	if err != nil {
+		t.Fatalf("second LoadLocal should be no-op: %v", err)
+	}
+	cfg := app.Get().(*TestConfig)
+	if cfg.Name != "first" {
+		t.Fatalf("should keep first name, got %s", cfg.Name)
+	}
+}

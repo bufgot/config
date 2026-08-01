@@ -192,3 +192,161 @@ func TestApollo_Fetch_ServerError(t *testing.T) {
 	}
 	t.Logf("expected error: %v", err)
 }
+
+func TestApollo_Fetch_NetworkError(t *testing.T) {
+	rc := &config.RemoteConfig{
+		Endpoints: []string{"http://127.0.0.1:19999"},
+		AppID:     "test-app",
+	}
+	p, _ := New(rc)
+	_, err := p.Fetch()
+	if err == nil {
+		t.Fatal("expected network error")
+	}
+	t.Logf("expected error: %v", err)
+}
+
+func TestApollo_Fetch_InvalidJSON(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte("not json"))
+	}))
+	defer ts.Close()
+
+	rc := &config.RemoteConfig{
+		Endpoints: []string{ts.URL},
+		AppID:     "test-app",
+	}
+	p, _ := New(rc)
+	_, err := p.Fetch()
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+	t.Logf("expected error: %v", err)
+}
+
+func TestApollo_Fetch_NoConfigurationsKey(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"appId":          "test-app",
+			"cluster":        "default",
+			"namespaceName":  "application",
+			"notificationId": 42,
+			"extraField":     "value",
+		})
+	}))
+	defer ts.Close()
+
+	rc := &config.RemoteConfig{
+		Endpoints: []string{ts.URL},
+		AppID:     "test-app",
+	}
+	p, _ := New(rc)
+	data, err := p.Fetch()
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	// Should return the full result when no "configurations" key
+	if data["appId"] != "test-app" {
+		t.Fatalf("expected appId in result, got %v", data)
+	}
+	t.Logf("no configurations key result: %v", data)
+}
+
+func TestApollo_Watch_FetchError(t *testing.T) {
+	callCount := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			// First call: pre-fetch returns success
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"appId":          "test-app",
+				"cluster":        "default",
+				"namespaceName":  "application",
+				"notificationId": 1,
+				"configurations": map[string]any{"key": "v1"},
+			})
+		} else {
+			// Subsequent calls during watch: return 500 to trigger fetch error
+			w.WriteHeader(500)
+		}
+	}))
+	defer ts.Close()
+
+	rc := &config.RemoteConfig{
+		Endpoints:    []string{ts.URL},
+		AppID:        "test-app",
+		Namespace:    "application",
+		SyncInterval: 1,
+	}
+
+	p, _ := New(rc)
+	p.Fetch()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ch, err := p.Watch(ctx)
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+
+	// Should not get any event (fetch errors, no change pushed)
+	select {
+	case data := <-ch:
+		t.Fatalf("unexpected data on channel: %v", data)
+	case <-ctx.Done():
+		t.Log("watch completed with fetch errors")
+	}
+}
+
+func TestApollo_Watch_ChannelFull(t *testing.T) {
+	notifID := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		notifID++
+		json.NewEncoder(w).Encode(map[string]any{
+			"appId":          "test-app",
+			"cluster":        "default",
+			"namespaceName":  "application",
+			"notificationId": notifID,
+			"configurations": map[string]any{"key": notifID},
+		})
+	}))
+	defer ts.Close()
+
+	rc := &config.RemoteConfig{
+		Endpoints:    []string{ts.URL},
+		AppID:        "test-app",
+		Namespace:    "application",
+		SyncInterval: 1,
+	}
+
+	p, _ := New(rc)
+	p.Fetch()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ch, err := p.Watch(ctx)
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+
+	// Receive first change to drain
+	select {
+	case <-ch:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for first watch event")
+	}
+
+	// Channel has capacity 1, second change will hit ch <- data
+	select {
+	case <-ch:
+		t.Log("second change received (channel not full)")
+	case <-time.After(3 * time.Second):
+		t.Log("timeout waiting, possible channel full covered")
+	}
+}

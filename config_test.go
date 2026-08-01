@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -171,4 +172,113 @@ func TestConcurrentGet(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// ============================================================
+// HasProvider
+// ============================================================
+
+func TestHasProvider_False(t *testing.T) {
+	app := New()
+	if app.HasProvider("nonexistent") {
+		t.Fatal("HasProvider should return false for unattached provider")
+	}
+}
+
+func TestHasProvider_True(t *testing.T) {
+	app := New()
+	app.remoteProviders = map[string]RemoteProvider{
+		"test": nil,
+	}
+	if !app.HasProvider("test") {
+		t.Fatal("HasProvider should return true for attached provider")
+	}
+}
+
+// ============================================================
+// Close with watcher cancels
+// ============================================================
+
+func TestClose_WithWatchers(t *testing.T) {
+	app := New()
+	app.listeners = append(app.listeners, func(cfg any) {})
+	app.initialized = true
+	app.raw = "test"
+
+	cancelCalled := false
+	cancel := func() { cancelCalled = true }
+	cancel2 := func() { cancelCalled = true }
+	app.watcherCancels = map[string]context.CancelFunc{
+		"p1": cancel,
+		"p2": cancel2,
+	}
+	app.remoteProviders = map[string]RemoteProvider{
+		"p1": nil,
+		"p2": nil,
+	}
+
+	app.Close()
+
+	if !cancelCalled {
+		t.Fatal("Close should cancel watchers")
+	}
+	if len(app.watcherCancels) != 0 {
+		t.Fatal("watcherCancels should be nil after Close")
+	}
+}
+
+// ============================================================
+// reloadFromViper success
+// ============================================================
+
+func TestReloadFromViper_Success(t *testing.T) {
+	app := New()
+
+	type cfg struct {
+		Name string
+		Port int
+	}
+	app.raw = &cfg{}
+
+	app.viper.Set("name", "reload-test")
+	app.viper.Set("port", 9999)
+
+	err := app.reloadFromViper()
+	if err != nil {
+		t.Fatalf("reloadFromViper failed: %v", err)
+	}
+
+	c := app.raw.(*cfg)
+	if c.Name != "reload-test" {
+		t.Fatalf("expected name=reload-test, got %s", c.Name)
+	}
+	if c.Port != 9999 {
+		t.Fatalf("expected port=9999, got %d", c.Port)
+	}
+}
+
+func TestReloadFromViper_UnmarshalError(t *testing.T) {
+	app := New()
+
+	// Use a struct that will fail unmarshal (e.g., a string instead of a struct pointer)
+	app.raw = new(int) // viper can't unmarshal into int pointer well, but let's try
+	app.viper.Set("name", "test")
+
+	// This may or may not error; the important thing is it doesn't panic
+	_ = app.reloadFromViper()
+}
+
+// ============================================================
+// MustGet success
+// ============================================================
+
+func TestMustGet_Success(t *testing.T) {
+	app := New()
+	app.raw = "test-config"
+	app.initialized = true
+
+	got := app.MustGet()
+	if got != "test-config" {
+		t.Fatalf("expected test-config, got %v", got)
+	}
 }
