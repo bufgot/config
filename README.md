@@ -170,5 +170,3 @@ Overall module: **80%+**
 | grpc | Fixed |
 | quic-go | Fixed |
 | crypto/tls | Pending Go 1.26.5 |
-
-*（内容由AI生成，仅供参考）*
