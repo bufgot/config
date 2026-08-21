@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -109,9 +111,11 @@ func (a *App) watchRemoteLoop(ctx context.Context, ch <-chan map[string]any, pro
 
 			a.mu.Lock()
 			flattened := flattenMap(data)
+			oldFlat := flattenMap(a.viper.AllSettings())
 			for k, v := range flattened {
 				a.viper.Set(k, v)
 			}
+			a.logRemoteDiff(oldFlat, flattened)
 			if err := a.viper.Unmarshal(a.raw); err != nil {
 				log.Printf("[config] unmarshal after remote change: %v", err)
 				a.mu.Unlock()
@@ -144,6 +148,58 @@ func flattenMapRecurse(m map[string]any, prefix string, result map[string]any) {
 			result[key] = v
 		}
 	}
+}
+
+// isDevEnv reports whether the active environment is dev. resolveActiveEnv()
+// returns the ENV variable, falling back to ORION_PROFILE; an empty result
+// means no environment is activated, which is treated as dev.
+func isDevEnv() bool {
+	env := resolveActiveEnv()
+	return env == "" || strings.EqualFold(env, "dev")
+}
+
+// logRemoteDiff logs the per-key difference between the previous flattened
+// config snapshot (oldFlat) and the newly received remote config (newFlat).
+//
+//   - a key present in newFlat but missing in oldFlat is logged as added
+//   - a key present in both with a different value is logged as changed
+//     ("value from X to Y"), values compared via fmt.Sprintf("%v")
+//   - a key present in oldFlat but missing in newFlat is logged as removed
+//
+// Because viper.Set never deletes keys that disappear from the remote config,
+// removed keys stay in viper but are still reported as removed by the remote.
+// Logging only happens when the active environment is dev.
+func (a *App) logRemoteDiff(oldFlat, newFlat map[string]any) {
+	if !isDevEnv() {
+		return
+	}
+
+	for _, k := range sortedFlatKeys(newFlat) {
+		oldV, existed := oldFlat[k]
+		switch {
+		case !existed:
+			log.Printf("[config] remote config key added: %s = %v", k, fmt.Sprintf("%v", newFlat[k]))
+		case fmt.Sprintf("%v", oldV) != fmt.Sprintf("%v", newFlat[k]):
+			log.Printf("[config] remote config key changed: %s value from %v to %v",
+				k, fmt.Sprintf("%v", oldV), fmt.Sprintf("%v", newFlat[k]))
+		}
+	}
+
+	for _, k := range sortedFlatKeys(oldFlat) {
+		if _, ok := newFlat[k]; !ok {
+			log.Printf("[config] remote config key removed: %s (old value %v)", k, fmt.Sprintf("%v", oldFlat[k]))
+		}
+	}
+}
+
+// sortedFlatKeys returns the keys of m in deterministic (lexicographic) order.
+func sortedFlatKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // ParseRemoteConfig parses RemoteConfig from the loaded viper instance.

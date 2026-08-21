@@ -1,7 +1,11 @@
 package config
 
 import (
+	"bytes"
 	"context"
+	"log"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -207,10 +211,10 @@ func TestParseRemoteConfig_SubIsNil(t *testing.T) {
 // ============================================================
 
 type mockProvider struct {
-	name     string
-	fetchFn  func() (map[string]any, error)
-	watchFn  func(ctx context.Context) (<-chan map[string]any, error)
-	watchCh  chan map[string]any
+	name    string
+	fetchFn func() (map[string]any, error)
+	watchFn func(ctx context.Context) (<-chan map[string]any, error)
+	watchCh chan map[string]any
 }
 
 func (m *mockProvider) Name() string { return m.name }
@@ -390,7 +394,10 @@ func TestUseRemote_MultipleProviders(t *testing.T) {
 
 func TestWatchRemoteLoop_ChannelClosed(t *testing.T) {
 	app := New()
-	type testCfg struct{ Name string; Port int }
+	type testCfg struct {
+		Name string
+		Port int
+	}
 	app.raw = &testCfg{}
 
 	ch := make(chan map[string]any)
@@ -416,7 +423,10 @@ func TestWatchRemoteLoop_ChannelClosed(t *testing.T) {
 
 func TestWatchRemoteLoop_ContextCancelled(t *testing.T) {
 	app := New()
-	type testCfg struct{ Name string; Port int }
+	type testCfg struct {
+		Name string
+		Port int
+	}
 	app.raw = &testCfg{}
 
 	ch := make(chan map[string]any)
@@ -440,7 +450,10 @@ func TestWatchRemoteLoop_ContextCancelled(t *testing.T) {
 
 func TestWatchRemoteLoop_DataArrives(t *testing.T) {
 	app := New()
-	type testCfg struct{ Name string; Port int }
+	type testCfg struct {
+		Name string
+		Port int
+	}
 	app.raw = &testCfg{}
 
 	ch := make(chan map[string]any, 1)
@@ -464,6 +477,111 @@ func TestWatchRemoteLoop_DataArrives(t *testing.T) {
 
 	cancel()
 	wg.Wait()
+}
+
+// ============================================================
+// logRemoteDiff (dev env remote config diff logging)
+// ============================================================
+
+// captureLog runs fn while redirecting the global logger to a buffer and
+// returns everything logged during the call.
+func captureLog(fn func()) string {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+	fn()
+	return buf.String()
+}
+
+func TestLogRemoteDiff_Dev_AddedChangedRemoved(t *testing.T) {
+	app := New()
+	// No ENV/ORION_PROFILE set => active env is dev.
+	oldFlat := map[string]any{
+		"app.name": "old-name",
+		"port":     int(8080),
+		"db.host":  "127.0.0.1",
+	}
+	newFlat := map[string]any{
+		"app.name": "new-name", // changed
+		"port":     int(8080),  // unchanged
+		"feature":  true,       // added
+	}
+
+	out := captureLog(func() {
+		app.logRemoteDiff(oldFlat, newFlat)
+	})
+
+	if !strings.Contains(out, "added: feature = true") {
+		t.Fatalf("expected added log for feature, got:\n%s", out)
+	}
+	if !strings.Contains(out, "changed: app.name value from old-name to new-name") {
+		t.Fatalf("expected changed log for app.name, got:\n%s", out)
+	}
+	if !strings.Contains(out, "removed: db.host (old value 127.0.0.1)") {
+		t.Fatalf("expected removed log for db.host, got:\n%s", out)
+	}
+	// unchanged key must not appear in the diff
+	if strings.Contains(out, "port") {
+		t.Fatalf("unchanged key port should not be logged, got:\n%s", out)
+	}
+}
+
+func TestLogRemoteDiff_DevEnvExplicit(t *testing.T) {
+	app := New()
+	t.Setenv("ENV", "dev")
+
+	oldFlat := map[string]any{"k": "a"}
+	newFlat := map[string]any{"k": "b"}
+
+	out := captureLog(func() {
+		app.logRemoteDiff(oldFlat, newFlat)
+	})
+
+	if !strings.Contains(out, "changed: k value from a to b") {
+		t.Fatalf("expected changed log under ENV=dev, got:\n%s", out)
+	}
+}
+
+func TestLogRemoteDiff_NonDev_Silent(t *testing.T) {
+	app := New()
+	t.Setenv("ENV", "prod")
+
+	oldFlat := map[string]any{"k": "a"}
+	newFlat := map[string]any{"k": "b"}
+
+	out := captureLog(func() {
+		app.logRemoteDiff(oldFlat, newFlat)
+	})
+
+	if out != "" {
+		t.Fatalf("expected no diff logs under non-dev env, got:\n%s", out)
+	}
+}
+
+func TestLogRemoteDiff_ValueNormalizedCompare(t *testing.T) {
+	app := New()
+	// Same semantic value in different concrete types must be treated as equal
+	// via fmt.Sprintf("%v") normalization.
+	oldFlat := map[string]any{"ratio": float64(1)}
+	newFlat := map[string]any{"ratio": int64(1)}
+
+	out := captureLog(func() {
+		app.logRemoteDiff(oldFlat, newFlat)
+	})
+
+	if strings.Contains(out, "ratio") {
+		t.Fatalf("normalized-equal value should not be logged, got:\n%s", out)
+	}
+}
+
+func TestLogRemoteDiff_EmptyBoth(t *testing.T) {
+	app := New()
+	out := captureLog(func() {
+		app.logRemoteDiff(map[string]any{}, map[string]any{})
+	})
+	if out != "" {
+		t.Fatalf("expected no logs for empty diffs, got:\n%s", out)
+	}
 }
 
 // ============================================================
@@ -508,4 +626,3 @@ func TestFetchRemoteConfig_UnmarshalError(t *testing.T) {
 	// This should log an error but not panic
 	app.fetchRemoteConfig(mp)
 }
-
